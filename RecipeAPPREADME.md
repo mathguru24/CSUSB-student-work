@@ -40,9 +40,14 @@ all_diets = extract_all_diets(recipes['dietary_restrictions'])
 all_cuisines = sorted(set(recipes['cuisine'].dropna().unique()))
 
 print("\nDiet types found in recipes:", ', '.join(all_diets))
-user_diet = input("Preferred diet type (exact from list above, e.g. vegetarian): ").strip().lower()
+user_diet_input = input("Preferred diet types (comma separated, or type 'any' for all): ").strip().lower()
+if user_diet_input == "any" or user_diet_input == "":
+    user_diets = all_diets
+else:
+    user_diets = [d.strip() for d in user_diet_input.split(",") if d.strip()]
+
 print("\nCuisine/taste types found:", ', '.join(all_cuisines))
-user_cuisine = input("Preferred cuisine/taste (exact from list above, e.g. Indian): ").strip()
+user_cuisine = input("Preferred cuisine/taste (exact from list above, or leave blank for all): ").strip()
 user_demo = input("\n(Optional) Any cultural/demographic preference (press Enter to skip): ").strip().lower()
 
 cuisines = all_cuisines
@@ -63,12 +68,12 @@ def encode_recipe(row):
     features.append(float(prep_time) / 120.0)
     return features
 
-def encode_user(user_diet, user_cuisine):
-    diet_feat = [1 if user_diet == d else 0 for d in diets]
+def encode_user(user_diets, user_cuisine):
+    diet_feat = [1 if d in user_diets else 0 for d in diets]
     cuisine_feat = [1 if user_cuisine == c else 0 for c in cuisines]
     return diet_feat + cuisine_feat
 
-user_vec = encode_user(user_diet, user_cuisine)
+user_vec = encode_user(user_diets, user_cuisine)
 
 def is_recipe_safe(recipe_name, allergens_df, user_allergies):
     match = allergens_df[allergens_df['Food Product'].str.lower() == recipe_name.lower()]
@@ -76,24 +81,23 @@ def is_recipe_safe(recipe_name, allergens_df, user_allergies):
     recipe_allergens = ','.join(match['Allergens'].astype(str)).lower()
     return not any(allergy in recipe_allergens for allergy in user_allergies)
 
-def soft_filter_and_score(recipes, allergens, user_allergies, user_diet, user_cuisine, user_demo):
+def soft_filter_and_score(recipes, allergens, user_allergies, user_diets, user_cuisine, user_demo):
     results = []
     for _, row in recipes.iterrows():
         if not is_recipe_safe(row['recipe_name'], allergens, user_allergies): continue
-        score = 0
-        # Check if user_diet in this recipe
         try:
             row_diets = [d.lower() for d in ast.literal_eval(row['dietary_restrictions'])]
         except:
             row_diets = []
-        if user_diet and user_diet in row_diets: score += 1
+        score = 0
+        if user_diets and any(d in row_diets for d in user_diets): score += 1
         if user_cuisine and user_cuisine.lower() in str(row['cuisine']).lower(): score += 1
         if user_demo and user_demo in str(row['ingredients']).lower(): score += 1
         results.append((row, score))
     results = sorted(results, key=lambda x: x[1], reverse=True)
-    return [r[0] for r in results if r[1]>0] or [r[0] for r in results][:10]  # fallback
+    return [r[0] for r in results if r[1]>0] or [r[0] for r in results][:10]
 
-filtered_recipes = soft_filter_and_score(recipes, allergens, user_allergies, user_diet, user_cuisine, user_demo)
+filtered_recipes = soft_filter_and_score(recipes, allergens, user_allergies, user_diets, user_cuisine, user_demo)
 
 if not filtered_recipes:
     print("\nSorry, no recipes match your allergy filters. Try different options.\n")
@@ -105,7 +109,7 @@ for row in filtered_recipes:
     feature_vectors.append(encode_recipe(row) + user_vec)
 X_candidates = np.array(feature_vectors)
 
-n_rounds = min(5, len(X_candidates))  # Number of recipes to suggest
+n_rounds = min(10, len(X_candidates))  # Up to 10 suggestions
 X_hist = []
 y_hist = []
 
@@ -114,7 +118,7 @@ eigval_records = []
 mu_all, sigma_all = None, None
 
 np.random.seed(42)
-print("\nYou'll see up to 5 suggested recipes, and rate each one to help DietRiteAI learn:")
+print("\nYou'll see up to 10 suggested recipes, and rate each one to help DietRiteAI learn:")
 
 for t in range(n_rounds):
     if len(X_hist) < 2:
@@ -129,14 +133,20 @@ for t in range(n_rounds):
         idx = np.argmax(ucb)
 
     X_hist.append(X_candidates[idx])
-
-    # ---- NEW: REAL USER FEEDBACK ----
     row = filtered_recipes[idx]
+
+    # Print ALL available info
     print(f"\n--- Recipe Suggestion #{t+1} ---")
-    print(f"Recipe: {row['recipe_name']} | Cuisine: {row['cuisine']} | Diet: {row['dietary_restrictions']}")
-    print(f"Ingredients: {row['ingredients'][:120]}...")
-    print(f"Prep time: {row['prep_time_minutes']}")
-    # No instructions/image in file
+    print(f"Recipe: {row['recipe_name']}")
+    print(f"Cuisine: {row['cuisine']}")
+    print(f"Diets: {row['dietary_restrictions']}")
+    print(f"Ingredients: {row['ingredients']}")
+    print(f"Cooking Time: {row['cooking_time_minutes']}")
+    print(f"Prep Time: {row['prep_time_minutes']}")
+    print(f"Servings: {row['servings']}")
+    print(f"Calories per Serving: {row['calories_per_serving']}")
+    print("-"*45)
+
     # User rates the recipe as reward (between 0 and 1)
     while True:
         try:
@@ -199,4 +209,3 @@ if mu_all is not None and sigma_all is not None and len(mu_all) == len(X_candida
     plt.ylabel("Reward")
     plt.legend()
     plt.show()
-
